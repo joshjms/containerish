@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ func run() {
 	runFlags := flag.NewFlagSet("run", flag.ExitOnError)
 
 	rootfsFlag := runFlags.String("rootfs", "", "Path to the root filesystem")
+	boxDirFlag := runFlags.String("box", "", "Mount box directory into /box")
 	cgFlag := runFlags.Bool("cgroup", false, "Enable cgroup limits")
 	memLimitFlag := runFlags.Int64("mem-limit", 0, "Memory limit in bytes")
 	timeLimitFlag := runFlags.Int64("time-limit", 0, "CPU time limit in microseconds")
@@ -38,8 +40,8 @@ func run() {
 
 	runFlags.Parse(os.Args[2:])
 
-	if runFlags.NArg() < 2 {
-		log.Fatalf("Usage: %s run -rootfs=<path> [flags] <command> [args...]", os.Args[0])
+	if runFlags.NArg() < 1 {
+		log.Fatalf("Usage: %s run --rootfs=<path> --box=<box-path> [flags] <command> [args...]", os.Args[0])
 	}
 
 	if *rootfsFlag == "" {
@@ -47,6 +49,7 @@ func run() {
 	}
 
 	rootfs := *rootfsFlag
+	boxDir := *boxDirFlag
 	useCg := *cgFlag
 	memLimit := *memLimitFlag
 	timeLimit := *timeLimitFlag
@@ -54,7 +57,7 @@ func run() {
 	cmdPath := runFlags.Arg(0)
 	cmdArgs := runFlags.Args()[1:]
 
-	args := []string{"init", rootfs, cmdPath}
+	args := []string{"init", rootfs, boxDir, cmdPath}
 	args = append(args, cmdArgs...)
 
 	cmd := exec.Command("/proc/self/exe", args...)
@@ -72,18 +75,10 @@ func run() {
 			syscall.CLONE_NEWCGROUP |
 			syscall.CLONE_NEWTIME,
 		UidMappings: []syscall.SysProcIDMap{
-			{
-				ContainerID: 0,
-				HostID:      100000,
-				Size:        65536,
-			},
+			{ContainerID: 0, HostID: 100000, Size: 65536},
 		},
 		GidMappings: []syscall.SysProcIDMap{
-			{
-				ContainerID: 0,
-				HostID:      100000,
-				Size:        65536,
-			},
+			{ContainerID: 0, HostID: 100000, Size: 65536},
 		},
 		GidMappingsEnableSetgroups: false,
 		Credential: &syscall.Credential{
@@ -105,33 +100,57 @@ func run() {
 		})
 	}
 
-	processFinished := make(chan struct{}, 1)
+	processFinished := make(chan error, 1)
 
 	go func() {
-		if err := cmd.Wait(); err != nil {
-			log.Fatalf("Error waiting for command: %v", err)
-		}
-		close(processFinished)
+		processFinished <- cmd.Wait()
 	}()
 
-	select {
-	case <-time.After(time.Duration(timeLimit) * time.Microsecond):
-		log.Printf("Process time limit exceeded")
-	case <-processFinished:
-		log.Printf("Process finished successfully")
+	if timeLimit == 0 {
+		<-processFinished
+	} else {
+		select {
+		case <-time.After(3 * time.Duration(timeLimit) * time.Microsecond):
+		case <-processFinished:
+		}
+	}
+
+	cmd.Process.Kill()
+
+	if useCg {
+		stats, err := readCgroupStats()
+		if err != nil {
+			log.Printf("Error reading cgroup stats: %v", err)
+		}
+
+		log.Printf("Stats: %v\n", stats)
+		if err := cleanupCgroup(); err != nil {
+			log.Printf("Error cleaning up cgroup: %v", err)
+		}
 	}
 }
 
-func prepareRootfs(rootfs string) error {
+func prepareRootfs(rootfs, boxDir string) error {
 	if err := unix.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("error remounting / as private: %v", err)
+	}
+
+	if boxDir != "" {
+		dest := filepath.Join(rootfs, "box")
+		if err := os.MkdirAll(dest, 0755); err != nil {
+			return fmt.Errorf("error creating /box directory in rootfs: %v", err)
+		}
+
+		if err := unix.Mount(boxDir, dest, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+			return fmt.Errorf("error mounting box directory: %v", err)
+		}
 	}
 
 	if err := unix.Chroot(rootfs); err != nil {
 		return fmt.Errorf("error changing root to %s: %v", rootfs, err)
 	}
 
-	if err := os.Chdir("/"); err != nil {
+	if err := os.Chdir("/box"); err != nil {
 		return fmt.Errorf("error changing directory to /: %v", err)
 	}
 
@@ -153,19 +172,20 @@ func prepareRootfs(rootfs string) error {
 }
 
 func containerInit() {
-	if len(os.Args) < 4 {
-		log.Fatalf("Usage: %s init <rootfs> <command> [args...]", os.Args[0])
+	if len(os.Args) < 5 {
+		log.Fatalf("Usage: %s init <rootfs> <box> <command> [args...]", os.Args[0])
 	}
 
 	rootfs := os.Args[2]
-	cmdPath := os.Args[3]
-	cmdArgs := os.Args[4:]
+	boxDir := os.Args[3]
+	cmdPath := os.Args[4]
+	cmdArgs := os.Args[5:]
 
 	if err := unix.Sethostname([]byte("container")); err != nil {
 		log.Fatalf("Error setting hostname: %v", err)
 	}
 
-	if err := prepareRootfs(rootfs); err != nil {
+	if err := prepareRootfs(rootfs, boxDir); err != nil {
 		log.Fatalf("Error preparing rootfs: %v", err)
 	}
 

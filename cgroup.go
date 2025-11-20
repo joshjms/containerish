@@ -52,3 +52,37 @@ func setupCgroup(pid int, config cgroupConfig) error {
 
 	return nil
 }
+
+func readCgroupStats() (map[string]string, error) {
+	stats := make(map[string]string)
+
+	cgroupName := "containerish"
+	cgroupPath := filepath.Join(cgroupRoot, cgroupName)
+
+	memoryUsagePath := filepath.Join(cgroupPath, "memory.current")
+	memoryUsageData, err := os.ReadFile(memoryUsagePath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading memory usage: %v", err)
+	}
+	stats["memory.current"] = string(memoryUsageData)
+
+	cpuUsagePath := filepath.Join(cgroupPath, "cpu.stat")
+	cpuUsageData, err := os.ReadFile(cpuUsagePath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading CPU usage: %v", err)
+	}
+	stats["cpu.stat"] = string(cpuUsageData)
+
+	return stats, nil
+}
+
+func cleanupCgroup() error {
+	cgroupName := "containerish"
+	cgroupPath := filepath.Join(cgroupRoot, cgroupName)
+
+	if err := os.RemoveAll(cgroupPath); err != nil {
+		return fmt.Errorf("error removing cgroup: %v", err)
+	}
+
+	return nil
+}
