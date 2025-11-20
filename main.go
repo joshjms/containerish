@@ -116,7 +116,7 @@ func containerInit() {
 	cmdPath := os.Args[3]
 	cmdArgs := os.Args[4:]
 
-	if err := syscall.Sethostname([]byte("container")); err != nil {
+	if err := unix.Sethostname([]byte("container")); err != nil {
 		log.Fatalf("Error setting hostname: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func containerInit() {
 	}
 
 	env := os.Environ()
-	if err := syscall.Exec(cmdPath, append([]string{cmdPath}, cmdArgs...), env); err != nil {
+	if err := unix.Exec(cmdPath, append([]string{cmdPath}, cmdArgs...), env); err != nil {
 		log.Fatalf("Exec %s failed: %v", cmdPath, err)
 	}
 }
