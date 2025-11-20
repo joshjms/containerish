@@ -19,6 +19,7 @@ func setupCgroup(pid int, config cgroupConfig) error {
 	cgroupName := "containerish"
 	cgroupPath := filepath.Join(cgroupRoot, cgroupName)
 
+	// creating the cgroup
 	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
 		return fmt.Errorf("error creating cgroup directory: %v", err)
 	}
@@ -65,6 +66,13 @@ func readCgroupStats() (map[string]string, error) {
 		return nil, fmt.Errorf("error reading memory usage: %v", err)
 	}
 	stats["memory.current"] = string(memoryUsageData)
+
+	memoryPeakPath := filepath.Join(cgroupPath, "memory.peak")
+	memoryPeakData, err := os.ReadFile(memoryPeakPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading memory peak: %v", err)
+	}
+	stats["memory.peak"] = string(memoryPeakData)
 
 	cpuUsagePath := filepath.Join(cgroupPath, "cpu.stat")
 	cpuUsageData, err := os.ReadFile(cpuUsagePath)
