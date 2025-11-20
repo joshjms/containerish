@@ -1,11 +1,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -26,13 +28,31 @@ func main() {
 }
 
 func run() {
-	if len(os.Args) < 4 {
-		log.Fatalf("Usage: %s run <rootfs> <command> [args...]", os.Args[0])
+	runFlags := flag.NewFlagSet("run", flag.ExitOnError)
+
+	rootfsFlag := runFlags.String("rootfs", "", "Path to the root filesystem")
+	cgFlag := runFlags.Bool("cgroup", false, "Enable cgroup limits")
+	memLimitFlag := runFlags.Int64("mem-limit", 0, "Memory limit in bytes")
+	timeLimitFlag := runFlags.Int64("time-limit", 0, "CPU time limit in microseconds")
+	pidLimitFlag := runFlags.Int64("pid-limit", 0, "PID limit")
+
+	runFlags.Parse(os.Args[2:])
+
+	if runFlags.NArg() < 2 {
+		log.Fatalf("Usage: %s run -rootfs=<path> [flags] <command> [args...]", os.Args[0])
 	}
 
-	rootfs := os.Args[2]
-	cmdPath := os.Args[3]
-	cmdArgs := os.Args[4:]
+	if *rootfsFlag == "" {
+		log.Fatalf("rootfs flag is required")
+	}
+
+	rootfs := *rootfsFlag
+	useCg := *cgFlag
+	memLimit := *memLimitFlag
+	timeLimit := *timeLimitFlag
+	pidLimit := *pidLimitFlag
+	cmdPath := runFlags.Arg(0)
+	cmdArgs := runFlags.Args()[1:]
 
 	args := []string{"init", rootfs, cmdPath}
 	args = append(args, cmdArgs...)
@@ -72,8 +92,33 @@ func run() {
 		},
 	}
 
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("Error running command: %v", err)
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("Error starting command: %v", err)
+	}
+
+	if useCg {
+		setupCgroup(cmd.Process.Pid, cgroupConfig{
+			MemoryLimitByte: memLimit,
+			CpuMaxUs:        100000,
+			CpuPeriodUs:     100000,
+			PidLimit:        pidLimit,
+		})
+	}
+
+	processFinished := make(chan struct{}, 1)
+
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			log.Fatalf("Error waiting for command: %v", err)
+		}
+		close(processFinished)
+	}()
+
+	select {
+	case <-time.After(time.Duration(timeLimit) * time.Microsecond):
+		log.Printf("Process time limit exceeded")
+	case <-processFinished:
+		log.Printf("Process finished successfully")
 	}
 }
 
