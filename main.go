@@ -50,6 +50,15 @@ func run() {
 
 	rootfs := *rootfsFlag
 	boxDir := *boxDirFlag
+
+	if err := os.Chown(rootfs, 100000, 100000); err != nil {
+		log.Fatalf("Error changing ownership of rootfs: %v", err)
+	}
+
+	if err := os.Chown(boxDir, 100000, 100000); err != nil {
+		log.Fatalf("Error changing ownership of box directory: %v", err)
+	}
+
 	useCg := *cgFlag
 	memLimit := *memLimitFlag
 	timeLimit := *timeLimitFlag
